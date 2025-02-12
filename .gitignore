@@ -1,0 +1,4 @@
+# 忽略所有以.env开头，以.local结尾的文件
+.env.*.local
+.env.local
+logs/
