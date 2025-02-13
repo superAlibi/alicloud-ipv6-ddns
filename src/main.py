@@ -20,12 +20,16 @@ from aliyunsdkalidns.request.v20150109.AddDomainRecordRequest import AddDomainRe
 
 def setup_logger():
     """初始化日志记录器"""
-    # 创建Logs目录
-    if not os.path.exists('logs'):
-        os.makedirs('logs')
+    # 确定日志目录
+    if os.getenv('RUNNING_IN_SYSTEMD') == 'true':
+        log_dir = '/var/log/alicloud-ddns'
+    else:
+        log_dir = 'logs'
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
 
     # 生成日志文件名，使用当前日期
-    log_file = os.path.join('logs', f'ddns_{datetime.now().strftime("%Y%m%d")}.log')
+    log_file = os.path.join(log_dir, f'ddns_{datetime.now().strftime("%Y%m%d")}.log')
     
     # 创建日志记录器
     logger = logging.getLogger('DDNSLogger')
