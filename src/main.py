@@ -10,18 +10,16 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 import netifaces
-from dotenv import load_dotenv
+import toml
 from aliyunsdkcore.client import AcsClient
-from aliyunsdkcore.acs_exception.exceptions import ClientException
-from aliyunsdkcore.acs_exception.exceptions import ServerException
 from aliyunsdkalidns.request.v20150109.DescribeDomainRecordsRequest import DescribeDomainRecordsRequest
 from aliyunsdkalidns.request.v20150109.UpdateDomainRecordRequest import UpdateDomainRecordRequest
 from aliyunsdkalidns.request.v20150109.AddDomainRecordRequest import AddDomainRecordRequest
 
-def setup_logger():
+def setup_logger(running_in_systemd):
     """初始化日志记录器"""
     # 确定日志目录
-    if os.getenv('RUNNING_IN_SYSTEMD') == 'true':
+    if running_in_systemd:
         log_dir = '/var/log/alicloud-ddns'
     else:
         log_dir = 'logs'
@@ -39,28 +37,27 @@ def setup_logger():
     file_handler = logging.FileHandler(log_file, encoding='utf-8')
     file_handler.setLevel(logging.INFO)
 
-    # 创建控制台处理器
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-
     # 设置日志格式
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
 
     # 添加处理器
     logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
+
+    # 如果不是在systemd中运行，则添加控制台处理器
+    if not running_in_systemd:
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
 
     return logger
 
 class AliyunDDNS:
-    def __init__(self, access_key_id: str, access_key_secret: str, interface_domain_map: Dict[str, str],
-                 rr_list: List[str], record_type: str):
+    def __init__(self, access_key_id: str, access_key_secret: str, domains: List[Dict[str, str]]):
         self.client = AcsClient(access_key_id, access_key_secret, 'cn-hangzhou')
-        self.interface_domain_map = interface_domain_map
-        self.rr_list = rr_list
-        self.type = record_type
+        self.domains = domains
+        self.logger = logging.getLogger('DDNSLogger')
 
     def get_interface_ipv6(self, interface: str) -> Optional[str]:
         """获取指定接口的公网IPv6地址"""
@@ -106,13 +103,13 @@ class AliyunDDNS:
             self.logger.error(f'获取接口 {interface} 的IPv6地址失败: {str(e)}')
             return None
 
-    def get_domain_records(self, domain: str, rr: str) -> Optional[Dict]:
+    def get_domain_records(self, domain: str, rr: str,type:str) -> Optional[Dict]:
         """获取域名解析记录"""
         request = DescribeDomainRecordsRequest()
         request.set_accept_format('json')
         request.set_DomainName(domain)
         request.set_RRKeyWord(rr)
-        request.set_Type(self.type)
+        request.set_Type(type)
 
         try:
             response = self.client.do_action_with_exception(request)
@@ -122,13 +119,13 @@ class AliyunDDNS:
             self.logger.error(f'获取域名解析记录失败 ({domain}:{rr}): {str(e)}')
             return None
 
-    def add_domain_record(self, ip: str, domain: str, rr: str) -> bool:
+    def add_domain_record(self, ip: str, domain: str, rr: str,type:str) -> bool:
         """创建新的域名解析记录"""
         request = AddDomainRecordRequest()
         request.set_accept_format('json')
         request.set_DomainName(domain)
         request.set_RR(rr)
-        request.set_Type(self.type)
+        request.set_Type(type)
         request.set_Value(ip)
 
         try:
@@ -139,13 +136,13 @@ class AliyunDDNS:
             self.logger.error(f'创建DNS记录失败 ({rr}.{domain}): {str(e)}')
             return False
 
-    def update_domain_record(self, record_id: str, current_ip: str, domain: str, rr: str) -> bool:
+    def update_domain_record(self, record_id: str, current_ip: str, domain: str, rr: str,type:str) -> bool:
         """更新域名解析记录"""
         request = UpdateDomainRecordRequest()
         request.set_accept_format('json')
         request.set_RecordId(record_id)
         request.set_RR(rr)
-        request.set_Type(self.type)
+        request.set_Type(type)
         request.set_Value(current_ip)
 
         try:
@@ -158,101 +155,88 @@ class AliyunDDNS:
 
     def sync(self) -> None:
         """同步DNS记录"""
-        # 遍历每个接口和对应的域名
-        for interface, domain in self.interface_domain_map.items():
-            current_ip = self.get_interface_ipv6(interface)
+        # 遍历每个接口和对应的域名列表
+        for domainInfo in self.domains:
+            current_ip = self.get_interface_ipv6(domainInfo['bind_interface'])
             if not current_ip:
                 continue
 
-            # 更新该域名的所有主机记录
-            for rr in self.rr_list:
-                record = self.get_domain_records(domain, rr)
+            # 遍历所有的子域名前缀
+            for subdomain in domainInfo['subdomain']:
+                record = self.get_domain_records(domainInfo['domain_name'], subdomain,domainInfo['type'])
                 if not record:
-                    self.logger.info(f'未找到域名解析记录,准备创建: {rr}.{domain}')
-                    self.add_domain_record(current_ip, domain, rr)
+                    self.logger.info(f'未找到域名解析记录,准备创建: {subdomain}.{domainInfo['domain_name']}')
+                    self.add_domain_record(current_ip, domainInfo['domain_name'], subdomain,domainInfo['type'])
                     continue
 
                 if record['Value'] != current_ip:
-                    self.update_domain_record(record['RecordId'], current_ip, domain, rr)
+                    self.update_domain_record(record['RecordId'], current_ip, domainInfo['domain_name'], subdomain,domainInfo['type'])
                 else:
-                    self.logger.info(f'DNS记录已是最新: {rr}.{domain} -> {current_ip} ({interface})')
+                    self.logger.info(f'DNS记录已是最新: {subdomain}.{domainInfo['domain_name']} -> {current_ip}')
 
-def get_mode() -> str:
-    """获取运行模式"""
+def get_config_file() -> str:
+    """获取配置文件路径"""
     parser = argparse.ArgumentParser(description='阿里云DDNS客户端')
-    parser.add_argument('--mode', type=str,
-                        help='运行模式 (默认: production)')
+    parser.add_argument('--config', type=str, default='config.toml',
+                        help='配置文件路径 (默认: config.toml)')
     args = parser.parse_args()
-    return args.mode
-
-def load_env_files(mode: str,logger: logging.Logger) -> None:
-    """按照优先级顺序加载环境变量文件"""
-    # 先加载基础配置
-    if os.path.exists('.env'):
-        load_dotenv('.env')
-        logger.info('已加载: .env')
-    
-    # 加载模式特定的配置
-    mode_env = f'.env.{mode}'
-    if os.path.exists(mode_env):
-        load_dotenv(mode_env, override=True)
-        logger.info(f'已加载: {mode_env}')
-    
-    # 加载本地配置（最高优先级）
-    local_env = f'.env.{mode}.local'
-    if os.path.exists(local_env):
-        load_dotenv(local_env, override=True)
-        logger.info(f'已加载: {local_env}')
-    elif os.path.exists('.env.local'):
-        load_dotenv('.env.local', override=True)
-        logger.info('已加载: .env.local')
+    return args.config
 
 def load_config(logger: logging.Logger) -> tuple:
-    """从环境变量加载配置"""
+    """从TOML文件加载配置"""
     try:
-        # 按照优先级加载环境变量文件
-        mode = get_mode()
-        load_env_files(mode,logger)
+        # 获取配置文件路径
+        config_file = get_config_file()
+        local_config_file = config_file.replace('.toml', '.local.toml')
+        
+        # 检查配置文件是否存在
+        if not os.path.exists(config_file):
+            raise ValueError(f'配置文件不存在: {config_file}')
+        
+        # 加载TOML配置
+        config = toml.load(config_file)
+        logger.info(f'已加载配置文件: {config_file}')
+        
+        # 如果存在本地配置文件，加载并覆盖配置
+        if os.path.exists(local_config_file):
+            local_config = toml.load(local_config_file)
+            logger.info(f'已加载本地配置文件: {local_config_file}')
+            # 使用本地配置覆盖默认配置
+            config.update(local_config)
         
         # 读取必需的凭证
-        access_key_id = os.getenv('ALIYUN_ACCESS_KEY_ID')
-        access_key_secret = os.getenv('ALIYUN_ACCESS_KEY_SECRET')
+        credentials = config.get('credentials', {})
+        access_key_id = credentials.get('access_key_id')
+        access_key_secret = credentials.get('access_key_secret')
         
         if not all([access_key_id, access_key_secret]):
             raise ValueError('未设置阿里云访问凭证')
-            
-        # 构建接口和域名的映射关系
-        interface_domain_map = {}
-        for key, value in os.environ.items():
-            if key.startswith('DOMAIN_MAP_'):
-                interface = key.replace('DOMAIN_MAP_', '').lower()
-                interface_domain_map[interface] = value
         
-        if not interface_domain_map:
+        # 获取域名映射关系
+        domains = config.get('domains', [])
+        if not domains:
             raise ValueError('未设置域名映射关系')
-            
-        # 读取DNS记录设置
-        record_prefixes = os.getenv('DNS_RECORD_PREFIXES', '@,*,www').split(',')
-        record_type = os.getenv('DNS_RECORD_TYPE', 'AAAA')
-        
-        return access_key_id, access_key_secret, interface_domain_map, record_prefixes, record_type
+        return access_key_id, access_key_secret, domains # 将集合转换回列表
     except Exception as e:
         logger.error(f'加载配置失败: {str(e)}')
         return None, None, None, None, None
 
 def main():
+    parser = argparse.ArgumentParser(description='Alicloud DDNS Service')
+    parser.add_argument('--running-in-systemd', action='store_true', help='Indicate if running in systemd environment')
+    args = parser.parse_args()
+
     # 初始化日志记录器
-    logger = setup_logger()
+    logger = setup_logger(args.running_in_systemd)
     
     # 加载配置
-    access_key_id, access_key_secret, interface_domain_map, record_prefixes, record_type = load_config(logger)
-    
-    if not all([access_key_id, access_key_secret, interface_domain_map, record_prefixes, record_type]):
+    access_key_id, access_key_secret, domains = load_config(logger)
+    if not all([access_key_id, access_key_secret, domains]):
         logger.error('配置加载失败')
         return
 
     # 创建DDNS客户端
-    ddns = AliyunDDNS(access_key_id, access_key_secret, interface_domain_map, record_prefixes, record_type)
+    ddns = AliyunDDNS(access_key_id, access_key_secret, domains)
     ddns.logger = logger
     
     update_interval = 300  # 5分钟更新一次
