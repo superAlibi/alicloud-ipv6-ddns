@@ -18,13 +18,10 @@ from aliyunsdkalidns.request.v20150109.AddDomainRecordRequest import AddDomainRe
 
 def setup_logger(running_in_systemd):
     """初始化日志记录器"""
-    # 确定日志目录
-    if running_in_systemd:
-        log_dir = '/var/log/alicloud-ddns'
-    else:
-        log_dir = 'logs'
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
+    # 统一日志目录为项目目录下的 logs
+    log_dir = os.path.join(os.path.dirname(__file__), '../logs')
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
 
     # 生成日志文件名，使用当前日期
     log_file = os.path.join(log_dir, f'ddns_{datetime.now().strftime("%Y%m%d")}.log')
@@ -174,19 +171,13 @@ class AliyunDDNS:
                 else:
                     self.logger.info(f'DNS记录已是最新: {subdomain}.{domainInfo['domain_name']} -> {current_ip}')
 
-def get_config_file() -> str:
-    """获取配置文件路径"""
-    parser = argparse.ArgumentParser(description='阿里云DDNS客户端')
-    parser.add_argument('--config', type=str, default='config.toml',
-                        help='配置文件路径 (默认: config.toml)')
-    args = parser.parse_args()
-    return args.config
 
-def load_config(logger: logging.Logger) -> tuple:
+
+def load_config(logger: logging.Logger,args:argparse.Namespace) -> tuple:
     """从TOML文件加载配置"""
     try:
         # 获取配置文件路径
-        config_file = get_config_file()
+        config_file = args.config
         local_config_file = config_file.replace('.toml', '.local.toml')
         
         # 检查配置文件是否存在
@@ -219,22 +210,24 @@ def load_config(logger: logging.Logger) -> tuple:
         return access_key_id, access_key_secret, domains # 将集合转换回列表
     except Exception as e:
         logger.error(f'加载配置失败: {str(e)}')
-        return None, None, None, None, None
+        return None, None, None
 
 def main():
-    parser = argparse.ArgumentParser(description='Alicloud DDNS Service')
+    parser = argparse.ArgumentParser(description='阿里云DDNS客户端')
     parser.add_argument('--running-in-systemd', action='store_true', help='Indicate if running in systemd environment')
+    parser.add_argument('--config', type=str, default='config.toml',
+                        help='配置文件路径 (默认: config.toml)')
     args = parser.parse_args()
-
+   
     # 初始化日志记录器
     logger = setup_logger(args.running_in_systemd)
     
     # 加载配置
-    access_key_id, access_key_secret, domains = load_config(logger)
+    access_key_id, access_key_secret, domains = load_config(logger,args)
     if not all([access_key_id, access_key_secret, domains]):
         logger.error('配置加载失败')
         return
-
+    
     # 创建DDNS客户端
     ddns = AliyunDDNS(access_key_id, access_key_secret, domains)
     ddns.logger = logger
@@ -247,7 +240,7 @@ def main():
             ddns.sync()
             time.sleep(update_interval)
     except KeyboardInterrupt:
-        logger.info('\nDDNS服务已停止')
+        logger.info('DDNS服务已停止')
 
 if __name__ == '__main__':
     main()

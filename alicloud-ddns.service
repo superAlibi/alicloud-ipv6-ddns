@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=lucardo
 WorkingDirectory=/home/lucardo/workspace/alicloud-ddns
 ExecStart=/usr/bin/python3 /home/lucardo/workspace/alicloud-ddns/src/main.py --running-in-systemd
 
