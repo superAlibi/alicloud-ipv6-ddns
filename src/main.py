@@ -15,6 +15,7 @@ from aliyunsdkcore.client import AcsClient
 from aliyunsdkalidns.request.v20150109.DescribeDomainRecordsRequest import DescribeDomainRecordsRequest
 from aliyunsdkalidns.request.v20150109.UpdateDomainRecordRequest import UpdateDomainRecordRequest
 from aliyunsdkalidns.request.v20150109.AddDomainRecordRequest import AddDomainRecordRequest
+from apscheduler.schedulers.blocking import BlockingScheduler
 
 def setup_logger(running_in_systemd):
     """初始化日志记录器"""
@@ -235,11 +236,17 @@ def main():
     update_interval = 300  # 5分钟更新一次
     logger.info(f'DDNS服务已启动，每{update_interval}秒检查一次IP变化...')
     
+    # 创建调度器
+    scheduler = BlockingScheduler()
+    
+    # 添加定时任务
+    scheduler.add_job(ddns.sync, 'interval', seconds=update_interval)
+    
     try:
-        while True:
-            ddns.sync()
-            time.sleep(update_interval)
-    except KeyboardInterrupt:
+        # 启动调度器
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        scheduler.shutdown()
         logger.info('DDNS服务已停止')
 
 if __name__ == '__main__':
