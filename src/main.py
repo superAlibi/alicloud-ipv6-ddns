@@ -81,7 +81,7 @@ class AliyunDDNS:
                     ip == '::1',
                     ip.startswith('2002:'),
                     ip.startswith('3ffe:'),
-                    ip.startswith('fdfb'),
+                    ip.startswith('fd'),
                     ':' not in ip
                 ]):
                     continue
