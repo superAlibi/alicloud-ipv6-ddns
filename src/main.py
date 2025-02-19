@@ -235,7 +235,7 @@ def main():
     
     update_interval = 300  # 5分钟更新一次
     logger.info(f'DDNS服务已启动，每{update_interval}秒检查一次IP变化...')
-    
+    ddns.sync()
     # 创建调度器
     scheduler = BlockingScheduler()
     
